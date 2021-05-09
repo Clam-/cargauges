@@ -1,3 +1,22 @@
+// must match name of keys in setup.js.init()
+const CODES = {
+  "speed": "010D",
+  "accel": "",
+  "brake": "",
+  "power": "",
+  "battery": "",
+  "steer": "",
+  "range": "",
+}
+
+// once every 5 seconds
+const SLOWUPDATE = ["battery", "range"];
+// once every second
+const MEDUPDATE = [];
+// once every 100ms
+const FASTUPDATE = ["speed", "accel", "brake", "power", "steer"];
+
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -83,21 +102,39 @@ async function reqAndSetAccel(fancyp, gauges) {
   return done;
 }
 
-// once every 5 cycles
-const SLOWUPDATE = [battery, range];
-// once every 3 cycles
-const MEDUPDATE = [steer, brake];
-// once every cycle
-const FASTUPDATE = [reqAndSetSpeed, reqAndSetAccel, power];
+// build codestring, then get number of responses of lenth of codes...
+async function doUpdate(type, fancyp, gauges) {
+  if (type.length > 0) {
+    await fancyp.writeln("" + type.join(" "));
+    const { value, done } = await fancyport.read();
+    if (value) {
+      // get multiple responses or split response, dunno yet... and assign them to the gauge that matches the index of type
+      type[index]
+      
+      gauges[type[index]].value = ;
+    }
+    return done;
+  }
+}
 
 async function dataloop(fancyport, gauges) {
   var done = false;
+  var tfast = performance.now();
+  var tmed  = performance.now();
+  var tslow = performance.now();
   while (!done) {
-    [reqAndSetSpeed, reqAndSetAccel].forEach((func) => {
-      done = func(fancyport, gauges);
-    });
-
-    done = reqAndSetSpeed(fancyport, gauges);
+    var tnow = performance.now();
+    // lol does "DOMHighResTimeStamp" overflow/rollover ??
+    if (tnow - tfast >= 100) {
+      done = doUpdate(FASTUPDATE, fancyp, gauges)
+      tfast = tnow;
+    } else if (tnow - tmed >= 1000) {
+      done = doUpdate(MEDUPDATE, fancyport, gauges)
+      tmed = tnow;
+    } else if (tnow - tslow >= 5000) {
+      done = doUpdate(SLOWUPDATE, fancyport, gauges)
+      tslow = tnow;
+    }
   }
 }
 
