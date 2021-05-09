@@ -11,13 +11,14 @@ function doGauges() {
   //   colorNeedle: "#20105c",
   //   colorNeedleEnd: '#432d96'
   // });
-  initdata({
+  init({
     battery: batteryupdate,
     range: rangeupdate,
     accel: document.gauges.get("accel-gauge"),
     brake: document.gauges.get("brake-gauge"),
     speed: document.gauges.get("speed-gauge"),
     steer: document.gauges.get("steer-gauge"),
+    power: document.gauges.get("power-gauge");
   })
 }
 
