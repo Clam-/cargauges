@@ -1,21 +1,32 @@
-// must match name of keys in setup.js.init()
-const CODES = {
-  "speed": "010D",
-  "accel": "",
-  "brake": "",
-  "power": "",
-  "battery": "",
-  "steer": "",
-  "range": "",
-}
 
 // once every 5 seconds
-const SLOWUPDATE = ["battery", "range"];
+const SLOWUPDATE = [];
 // once every second
 const MEDUPDATE = [];
 // once every 100ms
-const FASTUPDATE = ["speed", "accel", "brake", "power", "steer"];
+const FASTUPDATE = [];
 
+// Stolen from here: https://github.com/nickn17/evDash/blob/master/src/CarBmwI3.cpp
+// and here: https://forum.abetterrouteplanner.com/topic/317-decoding-the-i3s-pids/?do=findComment&comment=6829
+const INITCMDS = [
+  "ATZ", "ATD",
+  "ATE0",
+  "ATPP2COFF",
+  "ATCF600",
+  "ATCF700",
+  "ATPBC001",
+  "ATSPB",
+  "ATAT0",
+  "ATSTFF",
+  "ATAL",
+  "ATH1",
+  "ATS0",
+  "ATL0",
+  "ATCSM0",
+  "ATCTM5",
+  "ATJE",
+  "ATSH6F1",
+];
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -55,6 +66,12 @@ async function setupPort(p) {
   fancyport.writeln = (s) => { fancyport.writer.write(s+"\n"); }
   fancyport.read = fancyport.reader.read
   return fancyport;
+}
+async function setupstage2(fancyp){
+  // do weird BMW setup stuff...
+  await fancyp.writeln("");
+  const { value, done } = await fancyport.read();
+
 }
 async function closePort(fancyp) {
   fancyp.reader.releaseLock()
@@ -110,7 +127,7 @@ async function doUpdate(type, fancyp, gauges) {
     if (value) {
       // get multiple responses or split response, dunno yet... and assign them to the gauge that matches the index of type
       type[index]
-      
+
       gauges[type[index]].value = ;
     }
     return done;

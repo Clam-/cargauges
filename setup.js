@@ -4,21 +4,42 @@ function batteryupdate(perc) {
 function rangeupdate(range) {
   document.getElementById("range").innerHTML = range;
 }
+function accelupdate(range) {
+  document.gauges.get("accel-gauge").value = range;
+}
+function brakeupdate(range) {
+  document.gauges.get("brake-gauge").value = range;
+}
+function speedupdate(range) {
+  document.gauges.get("speed-gauge").value = range;
+}
+function steerupdate(range) {
+  document.gauges.get("steer-gauge").value = range;
+}
+function powerupdate(range) {
+  document.gauges.get("power-gauge").value = range;
+}
 
 function doGauges() {
-  // init data, and give gauge objcs, and func of batt
   // document.gauges.get("speed-gauge").update({
   //   colorNeedle: "#20105c",
   //   colorNeedleEnd: '#432d96'
   // });
+  // init data, and give gauge objcs, and func of batt
+  // "updatespeed": [["type",updatefunc,sendcode]]
   init({
-    battery: batteryupdate,
-    range: rangeupdate,
-    accel: document.gauges.get("accel-gauge"),
-    brake: document.gauges.get("brake-gauge"),
-    speed: document.gauges.get("speed-gauge"),
-    steer: document.gauges.get("steer-gauge"),
-    power: document.gauges.get("power-gauge");
+    "fast": [
+      ["accel", accelupdate, ""]
+      ["brake", brakeupdate, ""]
+      ["speed", speedupdate, ""]
+      ["steer", steerupdate, ""]
+      ["power", powerupdate; ""]
+    ],
+    "medium": [],
+    "slow": [
+      ["battery", batteryupdate,""]
+      ["range", rangeupdate,""]
+    ]
   })
 }
 
