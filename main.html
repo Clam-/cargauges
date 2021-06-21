@@ -6,8 +6,9 @@
   <!-- Milligram CSS -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/milligram/1.4.1/milligram.css">
   <script id="gjs" async src="style/gauge.min.js"></script>
+  <script async=false src="dataparser.js"></script>
+  <script async=false src="updateui.js"></script>
   <script async=false src="makedatahappen.js"></script>
-  <script src="setup.js"></script>
   <link rel="stylesheet" media="screen" href="style/style.css" type="text/css"/>
 </head>
 <body>
@@ -19,10 +20,9 @@
   Battery % - km
   nerdspecs?
   Tyre temps lol
-
+  air con... lol
 -->
 <div class="container">
-
   <div class="row">
     <div class="column">
       <!-- Accel -->
@@ -32,7 +32,7 @@
         data-bar-width="100"
         data-height="300"
         data-min-value="0"
-        data-max-value="220"
+        data-max-value="100"
         data-border-shadow-width="0"
         data-borders="false"
         data-needle=""
@@ -40,7 +40,7 @@
         data-bar-stroke-width="0"
         data-stroke-ticks="false"
         data-bar-begin-circle="false"
-        data-value="175"
+        data-value="75"
         data-value-box="0"
         data-major-ticks="3"
         data-minor-ticks="0"
@@ -61,7 +61,7 @@
         data-bar-width="100"
         data-height="300"
         data-min-value="0"
-        data-max-value="220"
+        data-max-value="255"
         data-border-shadow-width="0"
         data-borders="false"
         data-needle=""
@@ -114,6 +114,7 @@
         data-value-text-shadow="true"
         data-value-int="1"
         data-font-value="Seven Segment"
+        data-font-units-size="30"
         data-color-major-ticks="#fca6ff"
         data-color-minor-ticks="#fca6ff"
         data-color-needle-circle-inner="#fca6ff"
@@ -134,15 +135,13 @@
       ></canvas>
     </div>
     <div class="column">
-      <!-- Battery -->
-      <p>Batt: <span id="bat-percent">90.5</span>%<br>Range: <span id="range">90</span>km</p>
       <!-- power -->
       <canvas id="power-gauge"
         data-type="radial-gauge"
         data-width="200"
         data-height="200"
         data-value="80"
-        data-units="Power"
+        data-units="kw"
         data-min-value="-150"
         data-max-value="150"
         data-major-ticks="-150,50,0,50,150"
@@ -166,6 +165,7 @@
         data-value-text-shadow="true"
         data-value-int="1"
         data-font-value="Seven Segment"
+        data-font-units-size="35"
         data-color-major-ticks="#fca6ff"
         data-color-minor-ticks="#fca6ff"
         data-color-needle-circle-inner="#fca6ff"
@@ -185,6 +185,8 @@
             {"from": 0, "to": 150, "color": "rgba(91, 227, 242, 1)"}
         ]'
       ></canvas>
+      <p style="white-space: nowrap;">B: <span id="bat-percent">90.5</span> (<span id="bat-percent-real">91.5</span>)%<br>
+      RNG: <span id="range">220</span>km</p>
     </div>
     <div class="column">
       <!-- wheel -->
@@ -234,7 +236,12 @@
         data-color-border-outer="#00000000"
         data-color-border-outer-end="#00000000"
       ></canvas>
+      <!-- AC -->
+      <p style="white-space: nowrap;">IN: <span id="ac-in">23.5</span>°C<br>
+      OUT: <span id="ac-out">30.2</span>°C<br>
+      AC: <span id="ac-status">ON</span> <span id="ac-set">23.0</span>°C</p>
     </div>
   </div>
-
+</div>
+<script src="setup.js"></script>
 </body>
