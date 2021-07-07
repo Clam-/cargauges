@@ -4,21 +4,19 @@ const SLOW = 5000;
 const INITCMDS = [
   "ATD",
   "ATE0",
+  "ATS0", //don't print spaces
   "ATH1",
   "ATAL",
   "ATPBE101",
   "ATSPB",
   "ATBI",
   "ATSH6F1",
-  "ATCRA607",
   //"ATCF600",
   //"ATCF700",
   "ATCRA607",
   "ATFCSH6F1",
   "ATFCSD07300800",
   "ATFCSM1",
-
-  "ATS0", //don't print spaces
 ];
 
 function sleep(ms) {
@@ -47,6 +45,7 @@ class FancyPort {
   constructor(p) {
     this.port = p;
     this.done = false;
+    this.queue = new Set();
   }
   async open() {
     await p.open({ baudRate: 115200 });
@@ -65,13 +64,8 @@ class FancyPort {
   async initcomms() {
     // do weird BMW setup stuff...
     for (var i in INITCMDS) {
-      console.log("SENDING: " + i);
-      this.writeln(i);
-      var value = await this.read();
-      if (this.done) { return false; }
+      this.queue.add(i);
     }
-    this.ready = true;
-    return true;
   }
   async writeln(s) { return this.writer.write(s+"\n"); }
   async read() {
@@ -97,7 +91,7 @@ class FancyPort {
     else { return false; }
   }
   async sendpid(pid) {
-    return this.writeln("070322"+pid)
+    return this.writeln(pid)
   }
 }
 
@@ -138,7 +132,7 @@ async function recvloop(fancyport, recvmap) {
   var prevmap = {} // PID : value
   while (!fancyport.done) {
     // process data...
-    curframe = fancyport.read()
+    curframe = await fancyport.read()
     // is this first frame?
     var ftype = curframe[5]  // 0 single, 1 first, 2 consec
     if (ftype == "0") {
@@ -167,13 +161,15 @@ async function recvloop(fancyport, recvmap) {
       // assemble ready for processing...
       recvdispatch(dest, assemble, recvmap, prevmap)
       prevmap[dest] = assemble;
+    }
+    // check if > displayed. Ready if so
+    if (curframe == "> "){
       fancyport.ready = true;
     }
   }
 }
 
 async function sendloop(fancyport, speedmapping){
-  var queue = new Set();
   var item = null;
   while (!fancyport.done) {
     var tnow = performance.now(); // lol does "DOMHighResTimeStamp" overflow/rollover ??
@@ -181,21 +177,21 @@ async function sendloop(fancyport, speedmapping){
     var tmed  = performance.now();
     var tslow = performance.now();
     if (tnow - tfast >= FAST) {
-      for (const pid in speedmapping["fast"]) { queue.add(pid) }
+      for (const pid in speedmapping["fast"]) { fancyport.queue.add(pid) }
       tfast = tnow;
     } else if (tnow - tmed >= MED) {
-      for (const pid in speedmapping["med"]) { queue.add(pid) }
+      for (const pid in speedmapping["med"]) { fancyport.queue.add(pid) }
       tmed = tnow;
     } else if (tnow - tslow >= SLOW) {
-      for (const pid in speedmapping["slow"]) { queue.add(pid) }
+      for (const pid in speedmapping["slow"]) { fancyport.queue.add(pid) }
       tslow = tnow;
     }
     if (fancyport.ready) {
-      item = queue.values().next()
+      item = queue.values().next() // calls next on the values iterator
       if (item) {
         // process
-        queue.delete(item);
-        fancyport.sendpid(pid);
+        fancyport.queue.delete(item);
+        fancyport.sendcmd(pid);
         fancyport.ready = false;
       } else { await new Promise(r => setTimeout(r, 50)); } // sleep a lil...
     } else { await new Promise(r => setTimeout(r, 50)); } // sleep a lil...
@@ -230,11 +226,12 @@ async function datastart(isClick, speedstruct) {
     await sleep(500);
   }
   if (fancyport) {
+    // Recv loop
+    recvloop(fancyport, recvmap);
     // comms please.
     var setupstatus = await fancyport.initcomms();
     if (!setupstatus) { return; }
-    // Data loop
-    recvloop(fancyport, recvmap);
+    // req loop
     sendloop(fancyport, sendmap);
     // wait for done... I guess?
     while (!fancyport.done) {

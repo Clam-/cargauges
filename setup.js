@@ -17,21 +17,25 @@
 //    TEST: D977
 //
 
+// CONSIDER D542  for indicator/lights/etc
+// GEAR D031
+
 function doGauges(isClick) {
   // init data, and give gauge objcs, and func of batt
   // "updatespeed": [["gauge",updatefunc,[pids]]]
   // ["speed", "gaugename", updatefunc, [pids]]
   datastart(isClick, [
-    ["fast", "accel", accelupdate, ["DE9C"]],
-    ["fast", "brake", brakeupdate, ["DABD"]],
-    ["fast", "speed", speedupdate, ["DABD"]],
-    ["fast", "steer", steerupdate, ["DB57"]],
-    ["fast", "power", powerupdate, ["DD69", "DD68"]], // only last item will be dispatched
-    ["slow", "battery", batteryupdate, ["DDBC"]],
-    ["slow", "range", acupdate, ["D92C"]],
-    ["slow", "range", acouttempupdate, ["D112"]],
-    ["slow", "range", acintempupdate, ["D859"]],
-    ["slow", "range", acsettempupdate, ["D977"]],
+    ["fast", "accel", accelupdate, ["12-DE9C"]],
+    ["fast", "brake", brakeupdate, ["40-DABD"]],
+    ["fast", "speed", speedupdate, ["40-DABD"]],
+    ["fast", "steer", steerupdate, ["30-DB57"]],
+    ["fast", "power", powerupdate, ["07-DD69", "07-DD68"]], // only last item will be dispatched
+    ["slow", "battery", batteryupdate, ["07-DDBC"]],
+    ["slow", "range", acupdate, ["78-D92C"]],
+    ["slow", "range", acouttempupdate, ["60-D112"]],
+    ["slow", "range", acintempupdate, ["78-D859"]],
+    ["slow", "range", acsettempupdate, ["78-D977"]],
+    ["med", "gear", gearupdate, ["63-D031"]],
   ])
 }
 
