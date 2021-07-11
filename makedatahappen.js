@@ -1,3 +1,6 @@
+// oh my god use this: STPPMA
+// will massively simplify everything.
+
 const FAST = 1000;
 const MED = 2000;
 const SLOW = 5000;
@@ -32,8 +35,13 @@ class LineBreakTransformer {
     this.chunks += chunk;
     // For each line breaks in chunks, send the parsed lines out.
     const lines = this.chunks.split("\r\n");
-    this.chunks = lines.pop();
+    this.chunks = lines.pop(); // remainder
     lines.forEach((line) => controller.enqueue(line));
+    // if remainder includes > then spit it out after the rest...
+    if (this.chunks.includes(">")) {
+        controller.enqueue(">");
+        this.chunks = this.chunks.split(">").pop(); // remainder
+    }
   }
   flush(controller) {
     // When the stream is closed, flush any remaining chunks out.
@@ -46,6 +54,7 @@ class FancyPort {
     this.port = p;
     this.done = false;
     this.queue = new Set();
+    this.immediate = [];
   }
   async open() {
     await p.open({ baudRate: 115200 });
@@ -85,13 +94,26 @@ class FancyPort {
   }
   async test() {
     await this.writeln("ATSP0")
+    // TODO: implement this https://advancedweb.hu/how-to-add-timeout-to-a-promise-in-javascript/#promiserace
     const value = await this.read();
     this.close();
     if (value == "OK") { return true; }
     else { return false; }
   }
-  async sendpid(pid) {
-    return this.writeln(pid)
+  async sendcmd(cmd) {
+    if (cmd.includes("-")) {
+      this.immediate = cmd.split("-");
+      return this.processcmd();
+    } else {
+        return this.writeln(pid)
+    }
+  }
+  async processcmd() {
+    const item = this.immediate.shift();
+    if (this.immediate.length == 0) { this.busy = false; }
+    else { this.busy = true;}
+    this.ready = false;
+    return this.writeln(item)
   }
 }
 
@@ -186,12 +208,15 @@ async function sendloop(fancyport, speedmapping){
       for (const pid in speedmapping["slow"]) { fancyport.queue.add(pid) }
       tslow = tnow;
     }
-    if (fancyport.ready) {
+    if (fancyport.busy) {
+      if (fancyport.ready){ await fancyport.processcmd(); }
+      else { await new Promise(r => setTimeout(r, 50)); } // sleep a lil...
+    } else if (fancyport.ready) {
       item = queue.values().next() // calls next on the values iterator
       if (item) {
         // process
         fancyport.queue.delete(item);
-        fancyport.sendcmd(pid);
+        await fancyport.sendcmd(item);
         fancyport.ready = false;
       } else { await new Promise(r => setTimeout(r, 50)); } // sleep a lil...
     } else { await new Promise(r => setTimeout(r, 50)); } // sleep a lil...
