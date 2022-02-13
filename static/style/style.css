@@ -11,7 +11,21 @@ p {
   filter: drop-shadow(1px 1px 2px #000000);
   line-height: 1.2;
 }
+.gear {
+  margin-left: -3.5rem;
+  margin-right: -1rem;
+  line-height: 0.9;
+  font-size: 2em;
+}
 
 .container {
   filter: drop-shadow(1px 1px 2px #000000);
+  padding-left: 0.5rem;
+}
+
+@media (min-width: 40rem) {
+  .row .column {
+    margin-bottom: inherit;
+    padding: 0 0.05rem;
+  }
 }

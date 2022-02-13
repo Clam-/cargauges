@@ -55,6 +55,7 @@ class FancyPort {
     this.done = false;
     this.queue = new Set();
     this.immediate = [];
+    this.bc = "";
   }
   async open() {
     await p.open({ baudRate: 115200 });
@@ -110,28 +111,38 @@ class FancyPort {
   }
   async processcmd() {
     const item = this.immediate.shift();
+    if (item.length == 2) {
+      // if current bc, ignore.
+      if (item == this.bc) { item = this.immediate.shift(); }
+      else { this.bc = item; }
+    }
     if (this.immediate.length == 0) { this.busy = false; }
     else { this.busy = true;}
     this.ready = false;
+    if (item.length == 2) {
+      item = "ATCEA" + item;
+    } else if (item.length == 4){
+      item = "22" + item;
+    } else { console.log("Unprocessed cmd"); }
     return this.writeln(item)
   }
 }
 
 async function getPort(isClick) {
+  if (isClick) {
+    try { fancyp = await navigator.serial.requestPort();}
+    catch (e) { console.log("No port selected"); return null; }
+    await fancyp.open();
+    if (await fancyp.test()) { return fancyp; }
+  }
   // attempt on any previous ports
   const ports = await navigator.serial.getPorts();
   var fancyp = null;
   ports.forEach(async (p)=>{
     fancyp = new FancyPort(p)
     await fancyp.open();
-    if (await fancyp.test()) {return fancyp};
+    if (await fancyp.test()) { return fancyp; }
   });
-  // if fail, prompt for port
-  if (isClick) {
-    fancyp = new(await navigator.serial.requestPort());
-    await fancyp.open();
-    if (await fancyp.test()) {return fancyp};
-  }
   return null;
 }
 
@@ -212,7 +223,7 @@ async function sendloop(fancyport, speedmapping){
       if (fancyport.ready){ await fancyport.processcmd(); }
       else { await new Promise(r => setTimeout(r, 50)); } // sleep a lil...
     } else if (fancyport.ready) {
-      item = queue.values().next() // calls next on the values iterator
+      item = queue.values().next().value // calls next on the values iterator
       if (item) {
         // process
         fancyport.queue.delete(item);
@@ -232,7 +243,7 @@ function setupmap(source) {
   var sendmap = {"fast": new Set(), "med": new Set(), "slow": new Set() };
   for (const [speed, name, func, pids] of source) {
     for (const ipid of pids) {
-      sendmap[speed].add(pid);
+      sendmap[speed].add(ipid);
     }
     // last item of the list of PIDs
     var pid = pids[pids.length-1];
@@ -243,14 +254,29 @@ function setupmap(source) {
   return [recvmap, sendmap];
 }
 
-async function datastart(isClick, speedstruct) {
-  var [recvmap, sendmap] = setupmap(speedstruct);
-  var fancyport = null;
-  while (fancyport === null) {
-    fancyport = await getPort(isClick);
-    await sleep(500);
-  }
+async function genstruct(mod) {
+  // map odb calls to update functions
+  // ["speed", "gaugename", updatefunc, [pids]]
+  return [
+    ["fast", "accelupdate", mod.accelupdate, ["12-DE9C"]],
+    ["fast", "brakeupdate", mod.brakeupdate, ["40-DABD"]],
+    ["fast", "speedupdate", mod.speedupdate, ["40-DABD"]],
+    ["fast", "steerupdate", mod.steerupdate, ["30-DB57"]],
+    ["fast", "powerupdate", mod.powerupdate, ["07-DD69", "07-DD68"]], // only last item will be dispatched
+    ["slow", "batteryupdate", mod.batteryupdate, ["07-DDBC"]],
+    ["slow", "range", mod.rangeupdate, ["07-D111"]],
+    ["slow", "acupdate", mod.acupdate, ["78-D92C"]],
+    ["slow", "acouttempupdate", mod.acouttempupdate, ["60-D112"]],
+    ["slow", "acintempupdate", mod.acintempupdate, ["78-D859"]],
+    ["slow", "acsettempupdate", mod.acsettempupdate, ["78-D977"]],
+    ["med", "gearupdate", mod.gearupdate, ["63-D031"]],
+  ]
+}
+
+export async function datastart(isClick, mod) {
+  var fancyport = await getPort(isClick);
   if (fancyport) {
+    var [recvmap, sendmap] = setupmap(genstruct(mod));
     // Recv loop
     recvloop(fancyport, recvmap);
     // comms please.
