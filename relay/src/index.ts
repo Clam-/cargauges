@@ -48,7 +48,7 @@ const SPEED_INTERVALS = { fast: 1000, med: 2000, slow: 5000 };
 let port: SerialPort | null = null;
 let ready = false;
 let currentBc = "";
-let pollInterval = 250;
+let pollInterval = 1500;
 let portScanTimer: ReturnType<typeof setInterval> | null = null;
 
 const dataStore: Record<string, string> = {};
