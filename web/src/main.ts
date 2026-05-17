@@ -10,6 +10,7 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 const statusDot = document.getElementById("ws-status")!;
 const pollSelect = document.getElementById("poll-speed") as HTMLSelectElement;
+const serialSelect = document.getElementById("serial-device") as HTMLSelectElement;
 const accelOverlay = document.getElementById("accel-value")!;
 
 function setStatus(connected: boolean) {
@@ -39,7 +40,11 @@ function connect() {
   ws.onmessage = (ev) => {
     try {
       const data = JSON.parse(ev.data);
-      handleData(data);
+      if (data.type === "serial_ports") {
+        handleSerialPorts(data);
+      } else {
+        handleData(data);
+      }
     } catch {}
   };
 }
@@ -50,6 +55,26 @@ function scheduleReconnect() {
     reconnectTimer = null;
     connect();
   }, 2000);
+}
+
+function handleSerialPorts(data: { ports: { path: string; manufacturer?: string }[]; connected: string | null }) {
+  const current = serialSelect.value;
+  while (serialSelect.options.length > 1) serialSelect.remove(1);
+
+  for (const p of data.ports) {
+    const opt = document.createElement("option");
+    opt.value = p.path;
+    opt.textContent = p.manufacturer ? `${p.path} (${p.manufacturer})` : p.path;
+    serialSelect.appendChild(opt);
+  }
+
+  if (data.connected) {
+    serialSelect.value = data.connected;
+  } else if (current && data.ports.some((p) => p.path === current)) {
+    serialSelect.value = current;
+  } else {
+    serialSelect.value = "";
+  }
 }
 
 function handleData(data: Record<string, unknown>) {
@@ -100,6 +125,13 @@ pollSelect.addEventListener("change", () => {
   const interval = parseInt(pollSelect.value, 10);
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: "set_poll_interval", value: interval }));
+  }
+});
+
+serialSelect.addEventListener("change", () => {
+  const path = serialSelect.value || null;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "select_port", path }));
   }
 });
 

@@ -49,6 +49,7 @@ let port: SerialPort | null = null;
 let ready = false;
 let currentBc = "";
 let pollInterval = 250;
+let portScanTimer: ReturnType<typeof setInterval> | null = null;
 
 const dataStore: Record<string, string> = {};
 const wss = new WebSocketServer({ port: WS_PORT });
@@ -182,6 +183,34 @@ function processFrame(line: string) {
   }
 }
 
+async function listSerialPorts(): Promise<{ path: string; manufacturer?: string }[]> {
+  const ports = await SerialPort.list();
+  return ports.map((p) => ({ path: p.path, manufacturer: p.manufacturer }));
+}
+
+async function broadcastPortList() {
+  const ports = await listSerialPorts();
+  broadcast({
+    type: "serial_ports",
+    ports,
+    connected: port?.isOpen ? port.path : null,
+  });
+}
+
+async function disconnectSerial() {
+  if (port && port.isOpen) {
+    return new Promise<void>((resolve) => {
+      port!.close(() => {
+        port = null;
+        ready = false;
+        currentBc = "";
+        resolve();
+      });
+    });
+  }
+  port = null;
+}
+
 function writeln(data: string) {
   if (port && port.isOpen) {
     port.write(data + "\r\n");
@@ -238,6 +267,7 @@ async function initSerial(path: string) {
   port.on("close", () => {
     console.log("Serial port closed");
     port = null;
+    broadcastPortList();
   });
 }
 
@@ -296,16 +326,37 @@ function startPolling() {
 }
 
 // WebSocket handling
-wss.on("connection", (ws) => {
+wss.on("connection", async (ws) => {
   clients.add(ws);
   console.log(`Client connected (${clients.size} total)`);
 
-  ws.on("message", (msg) => {
+  const ports = await listSerialPorts();
+  ws.send(JSON.stringify({
+    type: "serial_ports",
+    ports,
+    connected: port?.isOpen ? port.path : null,
+  }));
+
+  ws.on("message", async (msg) => {
     try {
       const data = JSON.parse(msg.toString());
       if (data.type === "set_poll_interval" && typeof data.value === "number") {
         pollInterval = data.value;
         broadcast({ type: "poll_interval", value: pollInterval });
+      } else if (data.type === "list_ports") {
+        await broadcastPortList();
+      } else if (data.type === "select_port") {
+        if (data.path) {
+          if (port?.isOpen && port.path === data.path) return;
+          await disconnectSerial();
+          console.log(`Connecting to serial port: ${data.path}`);
+          await initSerial(data.path);
+          await broadcastPortList();
+        } else {
+          await disconnectSerial();
+          console.log("Serial port disconnected by user");
+          await broadcastPortList();
+        }
       }
     } catch {}
   });
@@ -316,35 +367,13 @@ wss.on("connection", (ws) => {
   });
 });
 
-// Find and connect to serial port
-async function findPort(): Promise<string | null> {
-  const ports = await SerialPort.list();
-  // Look for common OBD adapter identifiers
-  const obd = ports.find(
-    (p) =>
-      p.manufacturer?.toLowerCase().includes("ftdi") ||
-      p.manufacturer?.toLowerCase().includes("silicon") ||
-      p.vendorId === "0403" ||
-      p.vendorId === "10C4" ||
-      p.path.includes("usbserial") ||
-      p.path.includes("usbmodem") ||
-      p.path.includes("ttyUSB") ||
-      p.path.includes("ttyACM")
-  );
-  return obd?.path ?? ports[0]?.path ?? null;
-}
-
 async function main() {
   console.log(`WebSocket server listening on ws://localhost:${WS_PORT}`);
+  console.log("Waiting for device selection from UI...");
 
-  const serialPath = process.argv[2] || (await findPort());
-  if (serialPath) {
-    console.log(`Connecting to serial port: ${serialPath}`);
-    await initSerial(serialPath);
-  } else {
-    console.log("No serial port found. Waiting for connections...");
-    console.log("Pass a port path as argument: pnpm dev /dev/ttyUSB0");
-  }
+  portScanTimer = setInterval(async () => {
+    if (clients.size > 0) await broadcastPortList();
+  }, 3000);
 }
 
 main();
