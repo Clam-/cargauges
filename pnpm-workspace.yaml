@@ -1,3 +1,6 @@
 packages:
   - relay
   - web
+allowBuilds:
+  '@serialport/bindings-cpp': true
+  esbuild: true
