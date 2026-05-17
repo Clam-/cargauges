@@ -3,7 +3,7 @@ import { ReadlineParser } from "@serialport/parser-readline";
 import { WebSocketServer, WebSocket } from "ws";
 
 const WS_PORT = 8069;
-const BAUD_RATE = 115200;
+const BAUD_RATE = 2000000;
 
 const INIT_CMDS = [
   "ATD",
@@ -15,10 +15,9 @@ const INIT_CMDS = [
   "ATSPB",
   "ATBI",
   "ATSH6F1",
-  "ATCRA607",
   "ATFCSH6F1",
-  "ATFCSD07300800",
   "ATFCSM1",
+  "ATST32",
 ];
 
 interface PidEntry {
@@ -30,17 +29,17 @@ interface PidEntry {
 
 const PID_TABLE: PidEntry[] = [
   { pid: "12-DE9C", speed: "fast", key: "accel" },
-  { pid: "40-DABD", speed: "fast", key: "speed", extraKeys: ["brake"] },
-  { pid: "30-DB57", speed: "fast", key: "steer" },
-  { pid: "07-DD69", speed: "fast", key: "power_amps" },
-  { pid: "07-DD68", speed: "fast", key: "power_volts" },
-  { pid: "07-DDBC", speed: "slow", key: "batt" },
-  { pid: "07-D111", speed: "slow", key: "range" },
-  { pid: "78-D92C", speed: "slow", key: "ac" },
-  { pid: "60-D112", speed: "slow", key: "acout" },
-  { pid: "78-D859", speed: "slow", key: "acin" },
-  { pid: "78-D977", speed: "slow", key: "acset" },
-  { pid: "63-D031", speed: "med", key: "gear" },
+  // { pid: "40-DABD", speed: "fast", key: "speed", extraKeys: ["brake"] },
+  // { pid: "30-DB57", speed: "fast", key: "steer" },
+  // { pid: "07-DD69", speed: "fast", key: "power_amps" },
+  // { pid: "07-DD68", speed: "fast", key: "power_volts" },
+  // { pid: "07-DDBC", speed: "slow", key: "batt" },
+  // { pid: "07-D111", speed: "slow", key: "range" },
+  // { pid: "78-D92C", speed: "slow", key: "ac" },
+  // { pid: "60-D112", speed: "slow", key: "acout" },
+  // { pid: "78-D859", speed: "slow", key: "acin" },
+  // { pid: "78-D977", speed: "slow", key: "acset" },
+  // { pid: "63-D031", speed: "med", key: "gear" },
 ];
 
 const SPEED_INTERVALS = { fast: 1000, med: 2000, slow: 5000 };
@@ -48,8 +47,9 @@ const SPEED_INTERVALS = { fast: 1000, med: 2000, slow: 5000 };
 let port: SerialPort | null = null;
 let ready = false;
 let currentBc = "";
-let pollInterval = 1500;
+let pollInterval = 5000;
 let portScanTimer: ReturnType<typeof setInterval> | null = null;
+let needFC = false;
 
 const dataStore: Record<string, string> = {};
 const wss = new WebSocketServer({ port: WS_PORT });
@@ -80,7 +80,12 @@ function parseAndBroadcast(pid: string, data: string) {
   const entry = PID_TABLE.find(
     (e) => e.pid.split("-")[1] === pid
   );
-  if (!entry) return;
+  if (!entry) {
+    console.log(`[parse] unknown PID ${pid}, data="${data}"`);
+    return;
+  }
+  console.log(`[parse] PID ${pid} (${entry.key}), data="${data}"`);
+
 
   const result: Record<string, number | string | number[]> = {};
 
@@ -140,10 +145,26 @@ function parseAndBroadcast(pid: string, data: string) {
   if (Object.keys(result).length > 0) broadcast(result);
 }
 
+function setReady() {
+  if (needFC) {
+    needFC = false;
+    const fcData = currentBc + "300800";
+    console.log(`[fc] sending flow control: "${fcData}"`);
+    writeln(fcData);
+    return;
+  }
+  ready = true;
+}
+
 function processFrame(line: string) {
-  if (!line || line.length < 6) return;
+  if (!line || line.length < 6) {
+    console.log(`[frame] skipping short/empty line: "${line}"`);
+    return;
+  }
 
   const ftype = line[5];
+  console.log(`[frame] type=${ftype} line="${line}"`);
+
 
   if (ftype === "0") {
     // Single frame
@@ -155,11 +176,14 @@ function processFrame(line: string) {
   } else if (ftype === "1") {
     // First frame of multi
     if (line.slice(9, 11) !== "62") return;
-    const totalLen = parseInt(line.slice(7, 9), 16);
+    const totalLen = parseInt(line.slice(6, 9), 16);
     destPid = line.slice(11, 15);
     assemble = line.slice(15);
     seq = 0;
-    remaining = (totalLen - 5) * 2 - assemble.length;
+    remaining = (totalLen - 3) * 2 - assemble.length;
+    if (remaining > 0) {
+      needFC = true;
+    }
   } else if (ftype === "2") {
     // Consecutive frame
     const nindex = parseInt(line[6], 16);
@@ -177,6 +201,9 @@ function processFrame(line: string) {
   }
 
   if (remaining <= 0 && assemble && destPid) {
+    if (remaining < 0) {
+      assemble = assemble.slice(0, assemble.length + remaining);
+    }
     parseAndBroadcast(destPid, assemble);
     assemble = "";
     destPid = "";
@@ -213,7 +240,10 @@ async function disconnectSerial() {
 
 function writeln(data: string) {
   if (port && port.isOpen) {
+    console.log(`[serial tx] "${data}"`);
     port.write(data + "\r\n");
+  } else {
+    console.warn(`[serial tx] port not open, dropping: "${data}"`);
   }
 }
 
@@ -225,6 +255,8 @@ function buildCmd(pidStr: string): string[] {
 
   if (ecu !== currentBc) {
     cmds.push("ATCEA" + ecu);
+    cmds.push("ATCRA6" + ecu);
+    cmds.push("ATFCSD" + ecu + "300800");
     currentBc = ecu;
   }
   cmds.push("22" + pid);
@@ -242,13 +274,32 @@ async function initSerial(path: string) {
   port = new SerialPort({ path, baudRate: BAUD_RATE });
 
   const parser = port.pipe(
-    new ReadlineParser({ delimiter: "\r\n" })
+    new ReadlineParser({ delimiter: "\r" })
   );
 
+  let rawByteCount = 0;
+  port.on("data", (buf: Buffer) => {
+    const prev = rawByteCount;
+    rawByteCount += buf.length;
+    if (prev === 0) {
+      console.log("[serial] first raw bytes received");
+    }
+  });
+
   parser.on("data", (line: string) => {
-    const trimmed = line.trim();
-    if (trimmed === ">" || trimmed === "OK" || trimmed === "") {
-      ready = true;
+    let trimmed = line.trim();
+    if (!trimmed) {
+      setReady();
+      return;
+    }
+    if (trimmed.startsWith(">")) trimmed = trimmed.slice(1);
+    if (!trimmed) {
+      setReady();
+      return;
+    }
+    console.log(`[serial rx] "${trimmed}"`);
+    if (trimmed === "OK") {
+      setReady();
       return;
     }
     processFrame(trimmed);
@@ -272,11 +323,13 @@ async function initSerial(path: string) {
 }
 
 async function runInit() {
-  for (const cmd of INIT_CMDS) {
-    writeln(cmd);
+  console.log(`[init] starting, ${INIT_CMDS.length} commands to send`);
+  for (let i = 0; i < INIT_CMDS.length; i++) {
+    console.log(`[init] [${i + 1}/${INIT_CMDS.length}] sending: ${INIT_CMDS[i]}`);
+    writeln(INIT_CMDS[i]);
     await waitReady(2000);
   }
-  console.log("Init complete");
+  console.log("[relay] Init complete");
 }
 
 function waitReady(timeout: number): Promise<void> {
@@ -284,7 +337,13 @@ function waitReady(timeout: number): Promise<void> {
     ready = false;
     const start = Date.now();
     const check = () => {
-      if (ready || Date.now() - start > timeout) {
+      if (ready) {
+        console.log(`[waitReady] got ready in ${Date.now() - start}ms`);
+        resolve();
+        return;
+      }
+      if (Date.now() - start > timeout) {
+        console.warn(`[waitReady] TIMEOUT after ${timeout}ms`);
         resolve();
         return;
       }
@@ -296,10 +355,14 @@ function waitReady(timeout: number): Promise<void> {
 
 function startPolling() {
   const timers: Record<string, number> = { fast: 0, med: 0, slow: 0 };
-  let pidIndex = 0;
+
+  console.log(`[poller] startPolling called, pollInterval=${pollInterval}ms`);
 
   const tick = async () => {
-    if (!port || !port.isOpen) return;
+    if (!port || !port.isOpen) {
+      console.warn("[poller] tick: port not open, stopping poll loop");
+      return;
+    }
 
     const now = Date.now();
     const pidsToSend: string[] = [];
@@ -311,6 +374,10 @@ function startPolling() {
           pidsToSend.push(entry.pid);
         }
       }
+    }
+
+    if (pidsToSend.length > 0) {
+      console.log(`[poller] tick: sending ${pidsToSend.length} PIDs: ${pidsToSend.join(", ")}`);
     }
 
     for (const pid of pidsToSend) {
