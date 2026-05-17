@@ -1,0 +1,17 @@
+{
+  "name": "cargauges",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n relay,web -c blue,green \"pnpm --filter relay dev\" \"pnpm --filter web dev\"",
+    "build": "pnpm --filter web build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@serialport/bindings-cpp",
+      "esbuild"
+    ]
+  }
+}

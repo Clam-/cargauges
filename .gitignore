@@ -2,3 +2,24 @@
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# pnpm
+pnpm-debug.log*
+
+# Vite
+web/dist/
+
+# Relay build
+relay/dist/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
