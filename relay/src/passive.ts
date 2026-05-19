@@ -3,10 +3,10 @@ import { ReadlineParser } from "@serialport/parser-readline";
 import { WebSocketServer, WebSocket } from "ws";
 
 const WS_PORT = 8069;
-const BAUD_RATE = 115200;
+const BAUD_RATE = 2000000;
 
-// Passive monitoring init: same CAN bus params but no request headers/filters
-const PASSIVE_INIT_CMDS = [
+// Phase 1: Basic adapter initialization
+const BASE_INIT_CMDS = [
   "ATD",       // Reset to defaults
   "ATE0",      // Echo off
   "ATS0",      // Spaces off
@@ -14,9 +14,30 @@ const PASSIVE_INIT_CMDS = [
   "ATAL",      // Allow long messages
   "ATPBE101",  // Protocol B: 500kbps, 11-bit CAN, variable DLC
   "ATSPB",     // Select Protocol B
-  "ATBI",      // Bypass init sequence
-  "ATCAF0",    // CAN auto-formatting OFF — raw frames with DLC
-  "STCMM 0",  // Silent monitoring: receive only, no ACKs
+  "STPO",      // Open current protocol
+];
+
+// Phase 2: BDC (Body Domain Controller) gateway activation
+// The D-CAN bus (OBD port) carries no broadcast traffic by default.
+// Opening an Extended Diagnostic Session with the BDC tells it to
+// forward PT-CAN / K-CAN frames onto D-CAN.
+const BDC_ECU_ID = "40";
+const BDC_SETUP_CMDS = [
+  "ATSH6F1",
+  "STCFCPC",
+  `STCFCPA 6F1 ${BDC_ECU_ID}, 6${BDC_ECU_ID} F1`,
+  `STCAF 1, ${BDC_ECU_ID}`,
+  `ATCRA6${BDC_ECU_ID}`,
+];
+
+const TESTER_PRESENT_INTERVAL_MS = 2000;
+
+// Phase 4: Transition to raw CAN monitoring
+const MONITOR_TRANSITION_CMDS = [
+  "STCAF 0",   // Back to normal addressing
+  "STFA",      // Enable automatic filtering — accept all IDs
+  "ATD 1",     // DLC printing on (parseRawFrame expects it)
+  "ATCAF0",    // CAN auto-formatting OFF — raw frames
 ];
 
 // ---------------------------------------------------------------------------
@@ -67,6 +88,7 @@ let monitoring = false;
 let portScanTimer: ReturnType<typeof setInterval> | null = null;
 let discoveryTimer: ReturnType<typeof setInterval> | null = null;
 let consoleTimer: ReturnType<typeof setInterval> | null = null;
+let initResponseCallback: ((line: string) => void) | null = null;
 
 const canStats = new Map<number, CanIdStats>();
 const wss = new WebSocketServer({ port: WS_PORT });
@@ -101,6 +123,20 @@ function waitReady(timeout: number): Promise<void> {
       setTimeout(check, 20);
     };
     check();
+  });
+}
+
+function sendAndCapture(cmd: string, timeout: number): Promise<string> {
+  return new Promise((resolve) => {
+    const lines: string[] = [];
+    initResponseCallback = (line) => {
+      lines.push(line);
+    };
+    writeln(cmd);
+    waitReady(timeout).then(() => {
+      initResponseCallback = null;
+      resolve(lines.join("\n"));
+    });
   });
 }
 
@@ -278,9 +314,14 @@ async function broadcastPortList() {
 }
 
 async function disconnectSerial() {
-  if (monitoring && port && port.isOpen) {
-    port.write("\r");
-    monitoring = false;
+  if (port && port.isOpen) {
+    if (monitoring) {
+      port.write("\r");
+      monitoring = false;
+      await waitReady(1000);
+    }
+    writeln("STPPMC");
+    await waitReady(1000);
   }
   stopDiscoveryBroadcast();
   stopConsoleSummary();
@@ -299,11 +340,51 @@ async function disconnectSerial() {
 }
 
 async function runInit() {
-  for (const cmd of PASSIVE_INIT_CMDS) {
+  // Phase 1: Basic adapter init
+  console.log("[passive] Phase 1: Adapter init...");
+  for (const cmd of BASE_INIT_CMDS) {
     writeln(cmd);
     await waitReady(2000);
   }
-  console.log("Passive init complete");
+
+  // Phase 2: Open Extended Diagnostic Session with BDC gateway
+  console.log("[passive] Phase 2: BDC gateway activation...");
+  for (const cmd of BDC_SETUP_CMDS) {
+    writeln(cmd);
+    await waitReady(2000);
+  }
+  const sessionResp = await sendAndCapture("1003", 3000);
+  if (sessionResp.includes("5003")) {
+    console.log("[passive] BDC Extended Diagnostic Session opened");
+  } else if (sessionResp === "NO DATA" || sessionResp === "") {
+    console.warn("[passive] BDC did not respond — gateway may not forward traffic");
+  } else if (sessionResp.includes("7F")) {
+    console.warn(`[passive] BDC rejected session: ${sessionResp}`);
+  } else {
+    console.warn(`[passive] BDC response: ${sessionResp}`);
+  }
+
+  // Phase 3: Periodic TesterPresent (keep BDC session alive during monitoring)
+  // STCMM 1 = normal node (ACKs + allows periodic tx while STMA is running)
+  console.log("[passive] Phase 3: Periodic TesterPresent...");
+  writeln("STCMM 1");
+  await waitReady(2000);
+  const tpResp = await sendAndCapture(
+    `STPPMA ${TESTER_PRESENT_INTERVAL_MS}, 6F1, 3E80`,
+    2000,
+  );
+  if (tpResp) {
+    console.log(`[passive] TesterPresent registered (handle ${tpResp})`);
+  }
+
+  // Phase 4: Transition to raw CAN monitoring mode
+  console.log("[passive] Phase 4: Monitoring setup...");
+  for (const cmd of MONITOR_TRANSITION_CMDS) {
+    writeln(cmd);
+    await waitReady(2000);
+  }
+
+  console.log("[passive] Init complete");
 }
 
 function startMonitoring() {
@@ -312,7 +393,7 @@ function startMonitoring() {
   writeln("STMA");
   startDiscoveryBroadcast();
   startConsoleSummary();
-  console.log("CAN bus monitoring started (STMA — silent, all IDs)");
+  console.log("[passive] CAN bus monitoring started (STMA)");
 }
 
 async function stopMonitoring() {
@@ -324,13 +405,13 @@ async function stopMonitoring() {
   stopDiscoveryBroadcast();
   stopConsoleSummary();
   await waitReady(2000);
-  console.log("CAN bus monitoring stopped");
+  console.log("[passive] CAN bus monitoring stopped");
 }
 
 async function initSerial(path: string) {
   port = new SerialPort({ path, baudRate: BAUD_RATE });
 
-  const parser = port.pipe(new ReadlineParser({ delimiter: "\r\n" }));
+  const parser = port.pipe(new ReadlineParser({ delimiter: "\r" }));
 
   parser.on("data", (line: string) => {
     const trimmed = line.trim();
@@ -345,11 +426,17 @@ async function initSerial(path: string) {
     if (trimmed === "STOPPED") {
       monitoring = false;
       ready = true;
-      console.log("Monitor stopped by device");
+      console.log("[passive] Monitor stopped by device");
       return;
     }
+
+    if (initResponseCallback) {
+      initResponseCallback(trimmed);
+      return;
+    }
+
     if (trimmed === "CAN ERROR" || trimmed === "BUS ERROR") {
-      console.error("Bus error:", trimmed);
+      console.error("[passive] Bus error:", trimmed);
       return;
     }
 
@@ -359,17 +446,17 @@ async function initSerial(path: string) {
   });
 
   port.on("open", async () => {
-    console.log(`Serial port ${path} opened`);
+    console.log(`[passive] Serial port ${path} opened`);
     await runInit();
     startMonitoring();
   });
 
   port.on("error", (err) => {
-    console.error("Serial error:", err.message);
+    console.error("[passive] Serial error:", err.message);
   });
 
   port.on("close", () => {
-    console.log("Serial port closed");
+    console.log("[passive] Serial port closed");
     port = null;
     monitoring = false;
     stopDiscoveryBroadcast();
@@ -433,15 +520,13 @@ wss.on("connection", async (ws) => {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  console.log("=== CAN Bus Passive Monitor ===");
+  console.log("=== CAN Bus Passive Monitor (BDC Gateway Mode) ===");
   console.log(`WebSocket server listening on ws://localhost:${WS_PORT}`);
   console.log("");
-  console.log("This mode listens to CAN bus traffic without sending any requests.");
-  console.log("Broadcast CAN messages from ECUs will be captured and displayed.");
-  console.log("");
-  console.log("NOTE: UDS diagnostic data (service 0x22 ReadDataByIdentifier) requires");
-  console.log("      active polling and will NOT appear unless another device is polling.");
-  console.log("      Broadcast messages (speed, steering, etc.) ARE available passively.");
+  console.log("On connect this will:");
+  console.log("  1. Open an Extended Diagnostic Session with the BDC (ECU 0x40)");
+  console.log("  2. Send periodic TesterPresent to keep the session alive");
+  console.log("  3. Monitor all CAN traffic forwarded by the gateway");
   console.log("");
   console.log("Waiting for device selection from UI...");
 
