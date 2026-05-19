@@ -15,8 +15,6 @@ const INIT_CMDS = [
   "ATSPB",
   "ATBI",
   "ATSH6F1",
-  "ATFCSH6F1",
-  "ATFCSM1",
   "ATST32",
 ];
 
@@ -207,6 +205,7 @@ function processFrame(line: string) {
     parseAndBroadcast(destPid, assemble);
     assemble = "";
     destPid = "";
+    needFC = false;
   }
 }
 
@@ -254,9 +253,10 @@ function buildCmd(pidStr: string): string[] {
   const pid = parts[1];
 
   if (ecu !== currentBc) {
-    cmds.push("ATCEA" + ecu);
+    cmds.push("STCFCPC");
+    cmds.push("STCFCPA 6F1 " + ecu + ", 6" + ecu + " F1");
+    cmds.push("STCAF 1, " + ecu);
     cmds.push("ATCRA6" + ecu);
-    cmds.push("ATFCSD" + ecu + "300800");
     currentBc = ecu;
   }
   cmds.push("22" + pid);
