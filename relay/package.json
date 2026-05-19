@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",
+    "dev:passive": "tsx src/passive.ts",
     "build": "tsc"
   },
   "dependencies": {
