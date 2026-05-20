@@ -69,6 +69,7 @@ let assemble = "";
 let destPid = "";
 let remaining = 0;
 let seq = 0;
+let testerPresentHandle: string | null = null;
 
 function broadcast(msg: object) {
   const json = JSON.stringify(msg);
@@ -100,7 +101,7 @@ function parseAndBroadcast(pid: string, data: string) {
 
   switch (entry.key) {
     case "accel":
-      result.accel = parseInt(data.slice(8), 16) * 0.0625;
+      result.accel = parseInt(data.slice(0, 4), 16) * 0.0625;
       break;
     case "speed": {
       const spd = parseInt(data.slice(0, 4), 16) / 64;
@@ -242,11 +243,13 @@ async function disconnectSerial() {
         port = null;
         ready = false;
         currentBc = "";
+        testerPresentHandle = null;
         resolve();
       });
     });
   }
   port = null;
+  testerPresentHandle = null;
 }
 
 function writeln(data: string) {
@@ -312,7 +315,7 @@ async function initSerial(path: string) {
       return;
     }
     console.log(`[serial rx] "${trimmed}"`);
-    if (trimmed === "OK") {
+    if (trimmed === "OK" || trimmed === "STOPPED") {
       setReady();
       return;
     }
@@ -357,13 +360,13 @@ async function runInit() {
   }
   const sessionResp = await sendAndCapture("1003", 3000);
   if (sessionResp.includes("5003")) {
-    console.log("[relay] BDC Extended Diagnostic Session opened");
+    console.log("[relay] BDC Extended Diagnostic Session opened (response: " + sessionResp.trim() + ") ✓");
   } else if (sessionResp === "NO DATA" || sessionResp === "") {
     console.warn("[relay] BDC did not respond — session not opened");
   } else if (sessionResp.includes("7F")) {
-    console.warn(`[relay] BDC rejected session: ${sessionResp}`);
+    console.warn(`[relay] BDC rejected session with NRC: ${sessionResp}`);
   } else {
-    console.warn(`[relay] BDC response: ${sessionResp}`);
+    console.warn(`[relay] BDC unexpected response: ${sessionResp}`);
   }
 
   // Periodic TesterPresent keeps the BDC session alive between polls
@@ -371,8 +374,11 @@ async function runInit() {
     `STPPMA ${TESTER_PRESENT_INTERVAL_MS}, 6F1, 3E80`,
     2000,
   );
-  if (tpResp) {
-    console.log(`[relay] TesterPresent registered (handle ${tpResp})`);
+  if (tpResp && tpResp.trim()) {
+    testerPresentHandle = tpResp.trim();
+    console.log(`[relay] TesterPresent registered (handle ${testerPresentHandle}) ✓`);
+  } else {
+    console.warn("[relay] TesterPresent failed to register");
   }
 
   // Reset addressing — the poller sets its own per-ECU addressing
@@ -513,8 +519,11 @@ async function shutdown() {
   if (portScanTimer) clearInterval(portScanTimer);
 
   if (port && port.isOpen) {
-    writeln("STPPMC");
-    await waitReady(1000);
+    if (testerPresentHandle) {
+      writeln(`STPPMC ${testerPresentHandle}`);
+      await waitReady(1000);
+      testerPresentHandle = null;
+    }
     writeln("STPC");
     await waitReady(1000);
     writeln("ATD");

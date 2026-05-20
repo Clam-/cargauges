@@ -23,3 +23,6 @@ relay/dist/
 
 # OS
 .DS_Store
+/docs/ediabas
+/docs/ovms
+relay/log.txt
