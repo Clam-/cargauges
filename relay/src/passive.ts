@@ -1,6 +1,8 @@
 import { SerialPort } from "serialport";
 import { ReadlineParser } from "@serialport/parser-readline";
 import { WebSocketServer, WebSocket } from "ws";
+import { createWriteStream, WriteStream } from "fs";
+import { join } from "path";
 
 const WS_PORT = 8069;
 const BAUD_RATE = 2000000;
@@ -89,6 +91,7 @@ let portScanTimer: ReturnType<typeof setInterval> | null = null;
 let discoveryTimer: ReturnType<typeof setInterval> | null = null;
 let consoleTimer: ReturnType<typeof setInterval> | null = null;
 let initResponseCallback: ((line: string) => void) | null = null;
+let logStream: WriteStream | null = null;
 
 const canStats = new Map<number, CanIdStats>();
 const wss = new WebSocketServer({ port: WS_PORT });
@@ -390,6 +393,13 @@ async function runInit() {
 function startMonitoring() {
   monitoring = true;
   canStats.clear();
+
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  const logPath = join(process.cwd(), `can_passive_${ts}.log`);
+  logStream = createWriteStream(logPath, { flags: "a" });
+  logStream.write("timestamp_ms,raw,id_hex,dlc,data_hex\n");
+  console.log(`[passive] Logging raw frames to ${logPath}`);
+
   writeln("STMA");
   startDiscoveryBroadcast();
   startConsoleSummary();
@@ -404,6 +414,10 @@ async function stopMonitoring() {
   monitoring = false;
   stopDiscoveryBroadcast();
   stopConsoleSummary();
+  if (logStream) {
+    logStream.end();
+    logStream = null;
+  }
   await waitReady(2000);
   console.log("[passive] CAN bus monitoring stopped");
 }
@@ -441,6 +455,17 @@ async function initSerial(path: string) {
     }
 
     if (monitoring) {
+      if (logStream) {
+        const frame = parseRawFrame(trimmed);
+        if (frame) {
+          const idHex = frame.id.toString(16).toUpperCase().padStart(3, "0");
+          logStream.write(
+            `${Date.now()},${trimmed},${idHex},${frame.dlc},${frame.data}\n`,
+          );
+        } else {
+          logStream.write(`${Date.now()},${trimmed},,,\n`);
+        }
+      }
       processCanFrame(trimmed);
     }
   });
@@ -513,6 +538,54 @@ wss.on("connection", async (ws) => {
     clients.delete(ws);
     console.log(`Client disconnected (${clients.size} total)`);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Graceful shutdown — reset adapter state so it stops transmitting
+// ---------------------------------------------------------------------------
+
+let shuttingDown = false;
+
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log("\n[passive] Shutting down...");
+
+  if (portScanTimer) clearInterval(portScanTimer);
+  stopDiscoveryBroadcast();
+  stopConsoleSummary();
+  if (logStream) {
+    logStream.end();
+    logStream = null;
+  }
+
+  if (port && port.isOpen) {
+    if (monitoring) {
+      port.write("\r");
+      await waitReady(1000);
+    }
+    writeln("STPPMC");
+    await waitReady(1000);
+    writeln("STPC");
+    await waitReady(1000);
+    writeln("ATD");
+    await waitReady(1000);
+
+    await new Promise<void>((resolve) => {
+      port!.close(() => resolve());
+    });
+    console.log("[passive] Serial port closed, adapter reset");
+  }
+
+  wss.close();
+  process.exit(0);
+}
+
+process.on("SIGINT", () => {
+  shutdown().catch(() => process.exit(1));
+});
+process.on("SIGTERM", () => {
+  shutdown().catch(() => process.exit(1));
 });
 
 // ---------------------------------------------------------------------------
