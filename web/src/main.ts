@@ -54,7 +54,7 @@ function scheduleReconnect() {
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     connect();
-  }, 2000);
+  }, 500);
 }
 
 function handleSerialPorts(data: { ports: { path: string; manufacturer?: string }[]; connected: string | null }) {

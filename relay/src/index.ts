@@ -11,12 +11,22 @@ const INIT_CMDS = [
   "ATS0",
   "ATH1",
   "ATAL",
-  "ATPBE101",
-  "ATSPB",
-  "ATBI",
+  "STP 33",
+  "STPO",
   "ATSH6F1",
-  "ATST32",
+  "STPTO 200",
 ];
+
+// BDC (Body Domain Controller) gateway — Extended Diagnostic Session
+// may reduce rate-limiting on polled requests through the gateway.
+const BDC_ECU_ID = "40";
+const BDC_SETUP_CMDS = [
+  "STCFCPC",
+  `STCFCPA 6F1 ${BDC_ECU_ID}, 6${BDC_ECU_ID} F1`,
+  `STCAF 1, ${BDC_ECU_ID}`,
+  `ATCRA6${BDC_ECU_ID}`,
+];
+const TESTER_PRESENT_INTERVAL_MS = 2000;
 
 interface PidEntry {
   pid: string;
@@ -27,27 +37,28 @@ interface PidEntry {
 
 const PID_TABLE: PidEntry[] = [
   { pid: "12-DE9C", speed: "fast", key: "accel" },
-  // { pid: "40-DABD", speed: "fast", key: "speed", extraKeys: ["brake"] },
-  // { pid: "30-DB57", speed: "fast", key: "steer" },
-  // { pid: "07-DD69", speed: "fast", key: "power_amps" },
-  // { pid: "07-DD68", speed: "fast", key: "power_volts" },
-  // { pid: "07-DDBC", speed: "slow", key: "batt" },
-  // { pid: "07-D111", speed: "slow", key: "range" },
-  // { pid: "78-D92C", speed: "slow", key: "ac" },
-  // { pid: "60-D112", speed: "slow", key: "acout" },
-  // { pid: "78-D859", speed: "slow", key: "acin" },
-  // { pid: "78-D977", speed: "slow", key: "acset" },
-  // { pid: "63-D031", speed: "med", key: "gear" },
+  { pid: "40-DABD", speed: "fast", key: "speed", extraKeys: ["brake"] },
+  { pid: "30-DB57", speed: "fast", key: "steer" },
+  { pid: "07-DD69", speed: "fast", key: "power_amps" },
+  { pid: "07-DD68", speed: "fast", key: "power_volts" },
+  { pid: "07-DDBC", speed: "slow", key: "batt" },
+  { pid: "07-D111", speed: "slow", key: "range" },
+  { pid: "78-D92C", speed: "slow", key: "ac" },
+  { pid: "60-D112", speed: "slow", key: "acout" },
+  { pid: "78-D859", speed: "slow", key: "acin" },
+  { pid: "78-D977", speed: "slow", key: "acset" },
+  { pid: "63-D031", speed: "med", key: "gear" },
 ];
 
-const SPEED_INTERVALS = { fast: 1000, med: 2000, slow: 5000 };
+const SPEED_INTERVALS = { fast: 100, med: 1000, slow: 5000 };
 
 let port: SerialPort | null = null;
 let ready = false;
 let currentBc = "";
-let pollInterval = 5000;
+let pollInterval = 50;
 let portScanTimer: ReturnType<typeof setInterval> | null = null;
 let needFC = false;
+let initResponseCallback: ((line: string) => void) | null = null;
 
 const dataStore: Record<string, string> = {};
 const wss = new WebSocketServer({ port: WS_PORT });
@@ -206,6 +217,7 @@ function processFrame(line: string) {
     assemble = "";
     destPid = "";
     needFC = false;
+    setReady();
   }
 }
 
@@ -264,9 +276,11 @@ function buildCmd(pidStr: string): string[] {
 }
 
 async function sendNextCmd(cmds: string[]) {
-  for (const cmd of cmds) {
-    writeln(cmd);
-    await new Promise((r) => setTimeout(r, 50));
+  for (let i = 0; i < cmds.length; i++) {
+    writeln(cmds[i]);
+    if (i < cmds.length - 1) {
+      await waitReady(500);
+    }
   }
 }
 
@@ -302,6 +316,10 @@ async function initSerial(path: string) {
       setReady();
       return;
     }
+    if (initResponseCallback) {
+      initResponseCallback(trimmed);
+      return;
+    }
     processFrame(trimmed);
   });
 
@@ -330,6 +348,39 @@ async function runInit() {
     await waitReady(2000);
   }
   console.log("[relay] Init complete");
+
+  // Open Extended Diagnostic Session with BDC gateway
+  console.log("[relay] BDC gateway activation...");
+  for (const cmd of BDC_SETUP_CMDS) {
+    writeln(cmd);
+    await waitReady(2000);
+  }
+  const sessionResp = await sendAndCapture("1003", 3000);
+  if (sessionResp.includes("5003")) {
+    console.log("[relay] BDC Extended Diagnostic Session opened");
+  } else if (sessionResp === "NO DATA" || sessionResp === "") {
+    console.warn("[relay] BDC did not respond — session not opened");
+  } else if (sessionResp.includes("7F")) {
+    console.warn(`[relay] BDC rejected session: ${sessionResp}`);
+  } else {
+    console.warn(`[relay] BDC response: ${sessionResp}`);
+  }
+
+  // Periodic TesterPresent keeps the BDC session alive between polls
+  const tpResp = await sendAndCapture(
+    `STPPMA ${TESTER_PRESENT_INTERVAL_MS}, 6F1, 3E80`,
+    2000,
+  );
+  if (tpResp) {
+    console.log(`[relay] TesterPresent registered (handle ${tpResp})`);
+  }
+
+  // Reset addressing — the poller sets its own per-ECU addressing
+  writeln("STCAF 0");
+  await waitReady(2000);
+  writeln("STFA");
+  await waitReady(2000);
+  currentBc = "";
 }
 
 function waitReady(timeout: number): Promise<void> {
@@ -338,7 +389,7 @@ function waitReady(timeout: number): Promise<void> {
     const start = Date.now();
     const check = () => {
       if (ready) {
-        console.log(`[waitReady] got ready in ${Date.now() - start}ms`);
+        console.log(`${Date.now()} [waitReady] got ready in ${Date.now() - start}ms`);
         resolve();
         return;
       }
@@ -350,6 +401,20 @@ function waitReady(timeout: number): Promise<void> {
       setTimeout(check, 20);
     };
     check();
+  });
+}
+
+function sendAndCapture(cmd: string, timeout: number): Promise<string> {
+  return new Promise((resolve) => {
+    const lines: string[] = [];
+    initResponseCallback = (line) => {
+      lines.push(line);
+    };
+    writeln(cmd);
+    waitReady(timeout).then(() => {
+      initResponseCallback = null;
+      resolve(lines.join("\n"));
+    });
   });
 }
 
@@ -432,6 +497,44 @@ wss.on("connection", async (ws) => {
     clients.delete(ws);
     console.log(`Client disconnected (${clients.size} total)`);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Graceful shutdown — reset adapter state so it stops transmitting
+// ---------------------------------------------------------------------------
+
+let shuttingDown = false;
+
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log("\n[relay] Shutting down...");
+
+  if (portScanTimer) clearInterval(portScanTimer);
+
+  if (port && port.isOpen) {
+    writeln("STPPMC");
+    await waitReady(1000);
+    writeln("STPC");
+    await waitReady(1000);
+    writeln("ATD");
+    await waitReady(1000);
+
+    await new Promise<void>((resolve) => {
+      port!.close(() => resolve());
+    });
+    console.log("[relay] Serial port closed, adapter reset");
+  }
+
+  wss.close();
+  process.exit(0);
+}
+
+process.on("SIGINT", () => {
+  shutdown().catch(() => process.exit(1));
+});
+process.on("SIGTERM", () => {
+  shutdown().catch(() => process.exit(1));
 });
 
 async function main() {
