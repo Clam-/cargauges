@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "dev:passive": "tsx src/passive.ts",
+    "scan": "tsx src/scan.ts",
     "build": "tsc"
   },
   "dependencies": {

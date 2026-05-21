@@ -18,7 +18,7 @@ const INIT_CMDS = [
 ];
 
 // BDC (Body Domain Controller) gateway — Extended Diagnostic Session
-// may reduce rate-limiting on polled requests through the gateway.
+// reduces rate-limiting on polled requests through the gateway.
 const BDC_ECU_ID = "40";
 const BDC_SETUP_CMDS = [
   "STCFCPC",
@@ -41,23 +41,19 @@ const PID_TABLE: PidEntry[] = [
   { pid: "30-DB57", speed: "fast", key: "steer" },
   { pid: "07-DD69", speed: "fast", key: "power_amps" },
   { pid: "07-DD68", speed: "fast", key: "power_volts" },
+  { pid: "63-D031", speed: "med", key: "gear" },
   { pid: "07-DDBC", speed: "slow", key: "batt" },
-  { pid: "07-D111", speed: "slow", key: "range" },
+  { pid: "60-D111", speed: "slow", key: "range" },
   { pid: "78-D92C", speed: "slow", key: "ac" },
   { pid: "60-D112", speed: "slow", key: "acout" },
-  { pid: "78-D859", speed: "slow", key: "acin" },
-  { pid: "78-D977", speed: "slow", key: "acset" },
-  { pid: "63-D031", speed: "med", key: "gear" },
 ];
 
 const SPEED_INTERVALS = { fast: 100, med: 1000, slow: 5000 };
 
 let port: SerialPort | null = null;
 let ready = false;
-let currentBc = "";
 let pollInterval = 50;
 let portScanTimer: ReturnType<typeof setInterval> | null = null;
-let needFC = false;
 let initResponseCallback: ((line: string) => void) | null = null;
 
 const dataStore: Record<string, string> = {};
@@ -84,6 +80,17 @@ function longParse(hex: string): number {
   return d;
 }
 
+function isTerminalResponse(s: string): boolean {
+  return s === "OK" ||
+    s === "STOPPED" ||
+    s === "NO DATA" ||
+    s === "?" ||
+    s.startsWith("CAN ERROR") ||
+    s === "BUFFER FULL" ||
+    s === "DATA ERROR" ||
+    s === "ACT ALERT";
+}
+
 function parseAndBroadcast(pid: string, data: string) {
   dataStore[pid] = data;
 
@@ -96,24 +103,34 @@ function parseAndBroadcast(pid: string, data: string) {
   }
   console.log(`[parse] PID ${pid} (${entry.key}), data="${data}"`);
 
-
   const result: Record<string, number | string | number[]> = {};
 
   switch (entry.key) {
     case "accel":
-      result.accel = parseInt(data.slice(0, 4), 16) * 0.0625;
+      // Bytes 4-5: STAT_PEDALWERT_WERT (pedal %, 0.0625 per bit)
+      if (data.length >= 12) {
+        result.accel = parseInt(data.slice(8, 12), 16) * 0.0625;
+      }
       break;
     case "speed": {
+      // Bytes 0-1: speed (unsigned int / 64 = km/h)
+      // Byte 2: speed status
+      // Byte 3: brake pedal status
       const spd = parseInt(data.slice(0, 4), 16) / 64;
-      const brk = parseInt(data.slice(8), 16);
+      const brk = parseInt(data.slice(6, 8), 16);
       result.speed = spd;
       result.brake = brk;
       break;
     }
-    case "steer":
-      result.steer = longParse(data.slice(0, 8));
+    case "steer": {
+      // Signed long / 100 = pinion angle in degrees
+      const deg = longParse(data.slice(0, 8)) / 100;
+      // Map to 0-360 for the circular gauge (0 = straight ahead)
+      result.steer = ((deg % 360) + 360) % 360;
       break;
+    }
     case "power_volts": {
+      // Unsigned int / 100 = HV voltage
       const volts = parseInt(data.slice(0, 4), 16) / 100;
       const ampsPid = PID_TABLE.find((e) => e.key === "power_amps");
       const ampsHex = ampsPid ? dataStore[ampsPid.pid.split("-")[1]] : null;
@@ -124,61 +141,74 @@ function parseAndBroadcast(pid: string, data: string) {
       break;
     }
     case "power_amps":
-      // stored for power_volts calculation
       break;
     case "batt": {
+      // Bytes 0-1: display SOC (uint / 10 = %)
+      // Bytes 2-3: max SOC limit (uint / 10 = %)
       const b1 = parseInt(data.slice(0, 4), 16) / 10;
       const b2 = parseInt(data.slice(4, 8), 16) / 10;
       result.batt = [b1, b2];
       break;
     }
     case "range":
+      // Bytes 0-1: electric range current (uint / 10 = km)
       result.range = parseInt(data.slice(0, 4), 16) / 10;
       break;
     case "ac":
+      // 0 = AC ON (LED off), 1 = AC OFF (LED on)
       result.ac = parseInt(data.slice(0, 2), 16);
       break;
     case "acout":
+      // Byte 0: ambient temp display (unsigned char / 2 - 40 = °C)
       result.acout = parseInt(data.slice(0, 2), 16) / 2 - 40;
       break;
-    case "acin":
-      result.acin = parseInt(data.slice(0, 2), 16);
+    case "gear": {
+      // Byte 0: STAT_DIRECTION (0=reverse, 1=drive, 2=neutral/park)
+      const val = parseInt(data.slice(0, 2), 16);
+      if (val === 0) result.gear = "R";
+      else if (val === 1) result.gear = "D";
+      else if (val === 2) result.gear = "N";
+      else result.gear = "?";
       break;
-    case "acset":
-      result.acset = parseInt(data.slice(0, 2), 16) / 2;
-      break;
-    case "gear":
-      result.gear = data;
-      break;
+    }
   }
 
   if (Object.keys(result).length > 0) broadcast(result);
 }
 
 function setReady() {
-  if (needFC) {
-    needFC = false;
-    const fcData = currentBc + "300800";
-    console.log(`[fc] sending flow control: "${fcData}"`);
-    writeln(fcData);
-    return;
-  }
   ready = true;
 }
 
 function processFrame(line: string) {
+  // Strip non-printable characters that may slip through
+  line = line.replace(/[^\x20-\x7E]/g, "");
+
   if (!line || line.length < 6) {
     console.log(`[frame] skipping short/empty line: "${line}"`);
+    setReady();
     return;
   }
 
   const ftype = line[5];
   console.log(`[frame] type=${ftype} line="${line}"`);
 
-
   if (ftype === "0") {
     // Single frame
-    if (line.slice(7, 9) !== "62") return;
+    const svc = line.slice(7, 9);
+    if (svc === "7F") {
+      // Negative response: 7F <service> <NRC>
+      const nrc = parseInt(line.slice(11, 13), 16);
+      if (nrc !== 0x78) {
+        // Terminal NRC (not "response pending")
+        setReady();
+      }
+      return;
+    }
+    if (svc !== "62") {
+      setReady();
+      return;
+    }
     const size = parseInt(line[6], 16);
     destPid = line.slice(9, 13);
     assemble = line.slice(13, 13 + (size - 3) * 2);
@@ -191,9 +221,6 @@ function processFrame(line: string) {
     assemble = line.slice(15);
     seq = 0;
     remaining = (totalLen - 3) * 2 - assemble.length;
-    if (remaining > 0) {
-      needFC = true;
-    }
   } else if (ftype === "2") {
     // Consecutive frame
     const nindex = parseInt(line[6], 16);
@@ -217,7 +244,6 @@ function processFrame(line: string) {
     parseAndBroadcast(destPid, assemble);
     assemble = "";
     destPid = "";
-    needFC = false;
     setReady();
   }
 }
@@ -242,7 +268,6 @@ async function disconnectSerial() {
       port!.close(() => {
         port = null;
         ready = false;
-        currentBc = "";
         testerPresentHandle = null;
         resolve();
       });
@@ -263,17 +288,16 @@ function writeln(data: string) {
 
 function buildCmd(pidStr: string): string[] {
   const parts = pidStr.split("-");
-  const cmds: string[] = [];
   const ecu = parts[0];
   const pid = parts[1];
 
-  if (ecu !== currentBc) {
-    cmds.push("STCFCPC");
-    cmds.push("STCFCPA 6F1 " + ecu + ", 6" + ecu + " F1");
-    cmds.push("STCAF 1, " + ecu);
-    cmds.push("ATCRA6" + ecu);
-    currentBc = ecu;
-  }
+  // Always send full flow control setup between PID requests.
+  // Skipping setup for same-ECU requests causes failures after multi-frame responses.
+  const cmds: string[] = [];
+  cmds.push("STCFCPC");
+  cmds.push("STCFCPA 6F1 " + ecu + ", 6" + ecu + " F1");
+  cmds.push("STCAF 1, " + ecu);
+  cmds.push("ATCRA6" + ecu);
   cmds.push("22" + pid);
   return cmds;
 }
@@ -304,7 +328,7 @@ async function initSerial(path: string) {
   });
 
   parser.on("data", (line: string) => {
-    let trimmed = line.trim();
+    let trimmed = line.trim().replace(/[^\x20-\x7E]/g, "");
     if (!trimmed) {
       setReady();
       return;
@@ -315,12 +339,13 @@ async function initSerial(path: string) {
       return;
     }
     console.log(`[serial rx] "${trimmed}"`);
-    if (trimmed === "OK" || trimmed === "STOPPED") {
+    if (initResponseCallback) {
+      initResponseCallback(trimmed);
       setReady();
       return;
     }
-    if (initResponseCallback) {
-      initResponseCallback(trimmed);
+    if (isTerminalResponse(trimmed)) {
+      setReady();
       return;
     }
     processFrame(trimmed);
@@ -352,6 +377,13 @@ async function runInit() {
   }
   console.log("[relay] Init complete");
 
+  // Clear any lingering periodic messages from prior sessions
+  for (let h = 1; h <= 20; h++) {
+    writeln(`STPPMC ${h.toString(16).toUpperCase()}`);
+    await waitReady(200);
+  }
+  console.log("[relay] Cleared old periodic message handles");
+
   // Open Extended Diagnostic Session with BDC gateway
   console.log("[relay] BDC gateway activation...");
   for (const cmd of BDC_SETUP_CMDS) {
@@ -360,13 +392,13 @@ async function runInit() {
   }
   const sessionResp = await sendAndCapture("1003", 3000);
   if (sessionResp.includes("5003")) {
-    console.log("[relay] BDC Extended Diagnostic Session opened (response: " + sessionResp.trim() + ") ✓");
-  } else if (sessionResp === "NO DATA" || sessionResp === "") {
+    console.log("[relay] BDC Extended Diagnostic Session opened");
+  } else if (sessionResp === "" || sessionResp.includes("NO DATA")) {
     console.warn("[relay] BDC did not respond — session not opened");
   } else if (sessionResp.includes("7F")) {
     console.warn(`[relay] BDC rejected session with NRC: ${sessionResp}`);
   } else {
-    console.warn(`[relay] BDC unexpected response: ${sessionResp}`);
+    console.log(`[relay] BDC session response: ${sessionResp}`);
   }
 
   // Periodic TesterPresent keeps the BDC session alive between polls
@@ -376,7 +408,7 @@ async function runInit() {
   );
   if (tpResp && tpResp.trim()) {
     testerPresentHandle = tpResp.trim();
-    console.log(`[relay] TesterPresent registered (handle ${testerPresentHandle}) ✓`);
+    console.log(`[relay] TesterPresent registered (handle ${testerPresentHandle})`);
   } else {
     console.warn("[relay] TesterPresent failed to register");
   }
@@ -386,7 +418,6 @@ async function runInit() {
   await waitReady(2000);
   writeln("STFA");
   await waitReady(2000);
-  currentBc = "";
 }
 
 function waitReady(timeout: number): Promise<void> {
