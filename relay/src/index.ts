@@ -456,34 +456,33 @@ function sendAndCapture(cmd: string, timeout: number): Promise<string> {
 }
 
 function startPolling() {
-  const timers: Record<string, number> = { fast: 0, med: 0, slow: 0 };
+  const lastPolled = new Map<string, number>();
 
   console.log(`[poller] startPolling called, pollInterval=${pollInterval}ms`);
 
   const tick = async () => {
     if (!port || !port.isOpen) {
-      console.warn("[poller] tick: port not open, stopping poll loop");
+      console.warn("[poller] port not open, stopping poll loop");
       return;
     }
 
     const now = Date.now();
-    const pidsToSend: string[] = [];
+    let nextEntry: PidEntry | null = null;
+    let maxOverdue = -1;
 
-    for (const speed of ["fast", "med", "slow"] as const) {
-      if (now - timers[speed] >= SPEED_INTERVALS[speed]) {
-        timers[speed] = now;
-        for (const entry of PID_TABLE.filter((e) => e.speed === speed)) {
-          pidsToSend.push(entry.pid);
-        }
+    for (const entry of PID_TABLE) {
+      const elapsed = now - (lastPolled.get(entry.pid) ?? 0);
+      const overdue = elapsed - SPEED_INTERVALS[entry.speed];
+      if (overdue >= 0 && overdue > maxOverdue) {
+        maxOverdue = overdue;
+        nextEntry = entry;
       }
     }
 
-    if (pidsToSend.length > 0) {
-      console.log(`[poller] tick: sending ${pidsToSend.length} PIDs: ${pidsToSend.join(", ")}`);
-    }
-
-    for (const pid of pidsToSend) {
-      const cmds = buildCmd(pid);
+    if (nextEntry) {
+      lastPolled.set(nextEntry.pid, now);
+      console.log(`[poller] polling ${nextEntry.key} (${nextEntry.pid})`);
+      const cmds = buildCmd(nextEntry.pid);
       await sendNextCmd(cmds);
       await waitReady(500);
     }
