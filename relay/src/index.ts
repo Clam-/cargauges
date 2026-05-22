@@ -57,8 +57,17 @@ let portScanTimer: ReturnType<typeof setInterval> | null = null;
 let initResponseCallback: ((line: string) => void) | null = null;
 
 const dataStore: Record<string, string> = {};
-const wss = new WebSocketServer({ port: WS_PORT });
+const wss = new WebSocketServer({ port: WS_PORT, reuseAddress: true });
 const clients = new Set<WebSocket>();
+
+wss.on("error", (err: Error & { code?: string }) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`[relay] Port ${WS_PORT} already in use. Try again in a few seconds.`);
+  } else {
+    console.error("[relay] WebSocket server error:", err.message);
+  }
+  process.exit(1);
+});
 
 // Multi-frame assembly state
 let assemble = "";
@@ -582,7 +591,7 @@ async function main() {
 
   portScanTimer = setInterval(async () => {
     if (clients.size > 0) await broadcastPortList();
-  }, 3000);
+  }, 2000);
 }
 
 main();

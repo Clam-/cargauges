@@ -7,6 +7,9 @@ const WS_URL = `ws://${window.location.hostname}:8069`;
 
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let lastMessageAt = 0;
+let staleTicker: ReturnType<typeof setInterval> | null = null;
+const STALE_TIMEOUT = 3000;
 
 const statusDot = document.getElementById("ws-status")!;
 const pollSelect = document.getElementById("poll-speed") as HTMLSelectElement;
@@ -20,16 +23,41 @@ function setStatus(connected: boolean) {
 }
 
 function connect() {
+  if (ws) {
+    ws.onclose = null;
+    ws.onerror = null;
+    ws.onmessage = null;
+    ws.onopen = null;
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+      ws.close();
+    }
+    ws = null;
+  }
+
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
   ws = new WebSocket(WS_URL);
 
   ws.onopen = () => {
     setStatus(true);
+    lastMessageAt = Date.now();
+    if (staleTicker) clearInterval(staleTicker);
+    staleTicker = setInterval(() => {
+      if (ws?.readyState === WebSocket.OPEN && Date.now() - lastMessageAt > STALE_TIMEOUT) {
+        console.warn(`[ws] no data for ${STALE_TIMEOUT}ms, forcing reconnect`);
+        connect();
+      }
+    }, 2000);
     const interval = parseInt(pollSelect.value, 10);
     ws!.send(JSON.stringify({ type: "set_poll_interval", value: interval }));
   };
 
   ws.onclose = () => {
     setStatus(false);
+    if (staleTicker) { clearInterval(staleTicker); staleTicker = null; }
     scheduleReconnect();
   };
 
@@ -38,6 +66,7 @@ function connect() {
   };
 
   ws.onmessage = (ev) => {
+    lastMessageAt = Date.now();
     try {
       const data = JSON.parse(ev.data);
       if (data.type === "serial_ports") {
@@ -56,6 +85,13 @@ function scheduleReconnect() {
     connect();
   }, 500);
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" &&
+      (!ws || ws.readyState !== WebSocket.OPEN)) {
+    connect();
+  }
+});
 
 function handleSerialPorts(data: { ports: { path: string; manufacturer?: string }[]; connected: string | null }) {
   const current = serialSelect.value;
